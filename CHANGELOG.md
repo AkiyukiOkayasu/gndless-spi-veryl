@@ -1,11 +1,13 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.1] - 2026-08-08
 
 - 公開moduleのparam/port doc commentと日本語説明を整理
 - doc commentの句点と体言止めの表記を整理
 - 各testのdoc commentへmode別の検証対象を明記
 - `SpiMaster`の`div_cnt`/`bit_cnt`をparameter導出の必要最小幅へ変更
+
+## [0.1.0] - 2026-07-31
 
 ### Changed
 
