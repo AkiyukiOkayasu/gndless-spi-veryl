@@ -78,9 +78,11 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
     // ------------------------------------------
     // カウンタ・レジスタ
     // ------------------------------------------
-    var div_cnt  : u16              ; // 分周用カウンタ
-    var bit_cnt  : u16              ; // 送信ビット数カウント
-    var shift_reg: logic<DATA_WIDTH>; // 送受信兼用シフトレジスタ
+    const DIV_CNT_WIDTH: u32                  = $std::max::<u32>($clog2(CLK_DIV / 2), 1);
+    const BIT_CNT_WIDTH: u32                  = $std::max::<u32>($clog2(DATA_WIDTH), 1);
+    var   div_cnt      : logic<DIV_CNT_WIDTH>; // 分周用カウンタ
+    var   bit_cnt      : logic<BIT_CNT_WIDTH>; // 送信ビット数カウント
+    var   shift_reg    : logic<DATA_WIDTH>   ; // 送受信兼用シフトレジスタ
 
     // SCLKの論理（レジスタで保持）
     var sclk_reg: logic;
