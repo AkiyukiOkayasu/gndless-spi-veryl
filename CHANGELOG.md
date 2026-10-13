@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+- `SpiMaster`のMode 1/3受信サンプルをSCLK立ち下がりから1クロック後（`LowWait`）へ移動
+  - SCLK立ち下がりでSDOを更新するスレーブ（ADS8688等）のデータ遷移に対する受信マージンを確保
+
 ## [0.1.1] - 2026-08-08
 
 - 公開moduleのparam/port doc commentと日本語説明を整理

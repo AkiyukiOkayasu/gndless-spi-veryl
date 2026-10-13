@@ -22,6 +22,8 @@ import Types::SpiMode;
 ///
 /// CPOLはidle level、CPHAは最初のedgeがshiftかsampleかを決める。
 /// Mode 0/2はleading edgeでsample、Mode 1/3はleading edgeでshiftする。
+/// MISOは2段シンクロナイザ経由で取り込み、Mode 1/3ではスレーブがSCLK立ち下がりで
+/// SDOを更新する前提（ADS8688等）で、立ち下がりから1クロック後の安定点でサンプルする。
 ///
 /// ```wavedrom
 /// {
@@ -189,8 +191,13 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
                     } else {
                         sclk_reg = cpol;
                     }
-                    miso_reg = miso_synced;
-                    div_cnt  = 1; //Sampleの1クロック分をカウント
+                    // CPHA=0ではサンプルエッジがMISOの安定点になる。
+                    // CPHA=1ではSCLK立ち下がりと同時にスレーブがSDOを更新するため、
+                    // サンプルは1クロック後のLowWaitで行う（スレーブのSDO遷移マージン確保）
+                    if cpha == 0 {
+                        miso_reg = miso_synced;
+                    }
+                    div_cnt = 1; //Sampleの1クロック分をカウント
                     if cpha == 0 {
                         state = HighWait;
                     } else {
@@ -242,12 +249,17 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
                     } else {
                         sclk_reg = !cpol;
                     }
+                    // CPHA=1ではSCLK立ち下がりの1クロック後にMISOをサンプルする
+                    if cpha == 1 {
+                        miso_reg = miso_synced;
+                    }
 
                     if div_cnt >= CLK_DIV / 2 - 1 {
                         if bit_cnt >= DATA_WIDTH - 1 {
                             // CPHA=1の場合、最後のサンプル結果をシフト
+                            // (miso_regはこのサイクルで更新されるため、同じ値のmiso_syncedを使う)
                             if cpha == 1 {
-                                shift_reg = (shift_reg << 1) | miso_reg;
+                                shift_reg = (shift_reg << 1) | miso_synced;
                             }
                             bit_cnt = 0;
                             div_cnt = 0;
