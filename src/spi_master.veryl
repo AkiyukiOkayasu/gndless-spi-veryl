@@ -166,6 +166,11 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
                 }
 
                 Setup: {
+                    // Mode1の先頭SCLK High幅を定常時と同じ半周期にそろえる。
+                    // この補正がないと先頭Highだけ1クロック分となり、ADS8688等のスレーブの最小High幅仕様を割る。
+                    if cpha == 1 && div_cnt == 1 {
+                        sclk_reg = !cpol;
+                    }
                     busy = 1;
                     cs_n = 0; // CSアサート
 
@@ -381,6 +386,9 @@ module test_spi_mode1_loopback {
     var mosi    : logic   ;
     var miso    : logic   ; // ループバック用
     var cs_n    : logic   ;
+    var rise_at : u32     ; // 先頭SCLK立ち上がりの観測サイクル
+    var fall_at : u32     ; // 先頭SCLK立ち下がりの観測サイクル
+    var seen    : logic   ; // 立ち上がり観測フラグ
 
     // MOSIをMISOにループバック接続
     assign miso = mosi;
@@ -410,6 +418,21 @@ module test_spi_mode1_loopback {
         start = 1;
         clk.next(1);
         start = 0;
+        // 先頭のSCLK High幅が半周期(CLK_DIV/2=10クロック)であることを確認
+        rise_at = 0;
+        fall_at = 0;
+        seen    = 0;
+        for i in 0..128 {
+            if !seen && sclk_out == 1 {
+                seen    = 1;
+                rise_at = i;
+            }
+            if seen && sclk_out == 0 && fall_at == 0 {
+                fall_at = i;
+            }
+            clk.next(1);
+        }
+        $assert(fall_at - rise_at == 10, "先頭SCLK High幅が半周期(10クロック)でない");
         clk.next(500); // 十分な時間待機
         $assert(busy == 0, "転送が完了していない");
         $assert(rx_data == 8'hA5, "ループバックデータ不一致");
