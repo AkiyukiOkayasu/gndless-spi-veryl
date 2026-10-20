@@ -185,7 +185,7 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
                             state = Shift;
                         }
                     } else {
-                        div_cnt += 1;
+                        div_cnt += 1'b1;
                     }
                 }
 
@@ -225,7 +225,7 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
                             state = Sample;
                         }
                     } else {
-                        div_cnt += 1;
+                        div_cnt += 1'b1;
                     }
                 }
 
@@ -270,7 +270,7 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
                             div_cnt = 0;
                             state   = Finish;
                         } else {
-                            bit_cnt += 1;
+                            bit_cnt += 1'b1;
                             if cpha == 0 {
                                 state = Sample;
                             } else {
@@ -278,7 +278,7 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
                             }
                         }
                     } else {
-                        div_cnt += 1;
+                        div_cnt += 1'b1;
                     }
                 }
 
@@ -292,7 +292,7 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
                         done  = 1;
                         busy  = 0;
                     } else {
-                        div_cnt += 1;
+                        div_cnt += 1'b1;
                     }
                 }
             }
