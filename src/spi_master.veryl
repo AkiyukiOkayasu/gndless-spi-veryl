@@ -22,8 +22,7 @@ import Types::SpiMode;
 ///
 /// CPOLはidle level、CPHAは最初のedgeがshiftかsampleかを決める。
 /// Mode 0/2はleading edgeでsample、Mode 1/3はleading edgeでshiftする。
-/// MISOは2段シンクロナイザ経由で取り込み、Mode 1/3ではスレーブがSCLK立ち下がりで
-/// SDOを更新する前提（ADS8688等）で、立ち下がりから1クロック後の安定点でサンプルする。
+/// MISOは2段シンクロナイザ経由で取り込み、Mode 1/3ではスレーブがSCLK立ち下がりでSDOを更新する前提（ADS8688等）で、立ち下がりから1クロック後の安定点でサンプルする。
 ///
 /// ```wavedrom
 /// {
@@ -197,8 +196,7 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
                         sclk_reg = cpol;
                     }
                     // CPHA=0ではサンプルエッジがMISOの安定点になる。
-                    // CPHA=1ではSCLK立ち下がりと同時にスレーブがSDOを更新するため、
-                    // サンプルは1クロック後のLowWaitで行う（スレーブのSDO遷移マージン確保）
+                    // CPHA=1ではSCLK立ち下がりと同時にスレーブがSDOを更新するため、サンプルは1クロック後のLowWaitで行う（スレーブのSDO遷移マージン確保）
                     if cpha == 0 {
                         miso_reg = miso_synced;
                     }
