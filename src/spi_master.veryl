@@ -192,12 +192,9 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
                     } else {
                         sclk_reg = cpol;
                     }
-                    // CPHA=0ではサンプルエッジがMISOの安定点になる。
-                    // CPHA=1ではSCLK立ち下がりと同時にスレーブがSDOを更新するため、サンプルは1クロック後のLowWaitで行う（スレーブのSDO遷移マージン確保）
-                    if cpha == 0 {
-                        miso_reg = miso_synced;
-                    }
-                    div_cnt = 1; //Sampleの1クロック分をカウント
+                    // CPHA=0はleading edge、CPHA=1はtrailing edge後のLow期間でMISOをサンプルする。
+                    miso_reg = miso_synced;
+                    div_cnt  = 1; //Sampleの1クロック分をカウント
                     if cpha == 0 {
                         state = HighWait;
                     } else {
@@ -260,17 +257,11 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
                     } else {
                         sclk_reg = !cpol;
                     }
-                    // CPHA=1ではLowWaitでMISOをサンプルする。
-                    if cpha == 1 {
-                        miso_reg = miso_synced;
-                    }
-
                     if div_cnt >= CLK_DIV / 2 - 1 {
                         if bit_cnt >= DATA_WIDTH - 1 {
-                            // CPHA=1の場合、最後のサンプル結果をシフト
-                            // (miso_regはこのサイクルで更新されるため、同じ値のmiso_syncedを使う)
+                            // CPHA=1の最後のサンプル結果をシフトする。
                             if cpha == 1 {
-                                shift_reg = (shift_reg << 1) | miso_synced;
+                                shift_reg = (shift_reg << 1) | miso_reg;
                             }
                             bit_cnt = 0;
                             div_cnt = 0;
@@ -514,6 +505,181 @@ module test_spi_mode1_cs_setup {
 
         $assert(cs_seen && rise_seen, "CS setup observation failed");
         $assert(rise_at - cs_fall_at == 10, "Mode 1 CS setup must be a half period");
+        $finish();
+    }
+}
+
+/// Mode 1で外部スレーブモデルから既知のbyteを受信できることを検証
+///
+/// スレーブはCS立ち下がりで先頭bitを用意し、SCLK立ち上がりごとに次のbitを出力する。
+/// MISOの2段synchronizerを経由してもbit順が崩れないことを確認する。
+#[test(test_spi_mode1_external_slave)]
+module test_spi_mode1_external_slave {
+    import Types::SpiMode;
+
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen ( clk );
+
+    const SLAVE_DATA: logic<8> = 8'hA5;
+
+    var start   : logic   ;
+    var tx_data : logic<8>;
+    var rx_data : logic<8>;
+    var busy    : logic   ;
+    var done    : logic   ;
+    var sclk_out: logic   ;
+    var mosi    : logic   ;
+    var miso    : logic   ;
+    var cs_n    : logic   ;
+
+    var slave_shift: logic<8>;
+    var prev_sclk  : logic   ;
+    var prev_cs    : logic   ;
+    var done_seen  : logic   ;
+
+    inst dut: SpiMaster::<SpiMode::Mode1> #(
+        DATA_WIDTH: 8 ,
+        CLK_DIV   : 20,
+    ) (
+        clk              ,
+        rst              ,
+        start            ,
+        tx_data          ,
+        rx_data          ,
+        busy             ,
+        done             ,
+        sclk   : sclk_out,
+        mosi             ,
+        miso             ,
+        cs_n             ,
+    );
+
+    always_ff (clk, rst) {
+        if_reset {
+            slave_shift = SLAVE_DATA;
+            prev_sclk   = 0;
+            prev_cs     = 1;
+            miso        = 1;
+            done_seen   = 0;
+        } else {
+            prev_sclk = sclk_out;
+            prev_cs   = cs_n;
+
+            if !cs_n && prev_cs {
+                slave_shift = SLAVE_DATA;
+                miso        = SLAVE_DATA[msb];
+            } else if !cs_n && sclk_out && !prev_sclk {
+                miso        = slave_shift[msb];
+                slave_shift = {slave_shift[6:0], 1'b0};
+            }
+
+            if done {
+                done_seen = 1;
+            }
+        }
+    }
+
+    initial {
+        start   = 0;
+        tx_data = 8'h00;
+        rst.assert();
+        clk.next(10);
+
+        start = 1;
+        clk.next(1);
+        start = 0;
+        clk.next(600);
+
+        $assert(done_seen, "external slave transfer did not finish");
+        $assert(!busy, "external slave transfer must clear busy");
+        $assert(rx_data == SLAVE_DATA, "external slave data mismatch");
+        $finish();
+    }
+}
+
+/// Mode 3で外部スレーブモデルから既知のbyteを受信できることを検証
+///
+/// CPOL=1のため、スレーブはSCLK立ち下がりで次のbitを出力する。
+#[test(test_spi_mode3_external_slave)]
+module test_spi_mode3_external_slave {
+    import Types::SpiMode;
+
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen ( clk );
+
+    const SLAVE_DATA: logic<8> = 8'h5A;
+
+    var start   : logic   ;
+    var tx_data : logic<8>;
+    var rx_data : logic<8>;
+    var busy    : logic   ;
+    var done    : logic   ;
+    var sclk_out: logic   ;
+    var mosi    : logic   ;
+    var miso    : logic   ;
+    var cs_n    : logic   ;
+
+    var slave_shift: logic<8>;
+    var prev_sclk  : logic   ;
+    var prev_cs    : logic   ;
+    var done_seen  : logic   ;
+
+    inst dut: SpiMaster::<SpiMode::Mode3> #(
+        DATA_WIDTH: 8 ,
+        CLK_DIV   : 20,
+    ) (
+        clk              ,
+        rst              ,
+        start            ,
+        tx_data          ,
+        rx_data          ,
+        busy             ,
+        done             ,
+        sclk   : sclk_out,
+        mosi             ,
+        miso             ,
+        cs_n             ,
+    );
+
+    always_ff (clk, rst) {
+        if_reset {
+            slave_shift = SLAVE_DATA;
+            prev_sclk   = 1;
+            prev_cs     = 1;
+            miso        = SLAVE_DATA[msb];
+            done_seen   = 0;
+        } else {
+            prev_sclk = sclk_out;
+            prev_cs   = cs_n;
+
+            if !cs_n && prev_cs {
+                slave_shift = SLAVE_DATA;
+                miso        = SLAVE_DATA[msb];
+            } else if !cs_n && !sclk_out && prev_sclk {
+                miso        = slave_shift[msb];
+                slave_shift = {slave_shift[6:0], 1'b0};
+            }
+
+            if done {
+                done_seen = 1;
+            }
+        }
+    }
+
+    initial {
+        start   = 0;
+        tx_data = 8'h00;
+        rst.assert();
+        clk.next(10);
+
+        start = 1;
+        clk.next(1);
+        start = 0;
+        clk.next(600);
+
+        $assert(done_seen, "Mode 3 external slave transfer did not finish");
+        $assert(!busy, "Mode 3 external slave transfer must clear busy");
+        $assert(rx_data == SLAVE_DATA, "Mode 3 external slave data mismatch");
         $finish();
     }
 }

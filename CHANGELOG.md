@@ -6,6 +6,11 @@
 
 - Mode 1/3の先頭SCLKをCS setup後まで遅らせ、`LeadHold`状態で先頭High幅を半周期確保するようにした
 - Mode 1/3のCS setupがCLK_DIVに比例しない問題を修正した
+- Mode 1/3のMISOサンプルをtrailing edge後のLow期間へ移し、leading edgeでサンプルしていた問題を修正した
+
+### Added
+
+- Mode 1/3の外部スレーブモデルtestとCS setup testを追加した
 
 ### Changed
 
