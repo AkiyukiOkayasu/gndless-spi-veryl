@@ -22,7 +22,9 @@ import Types::SpiMode;
 ///
 /// CPOLはidle level、CPHAは最初のedgeがshiftかsampleかを決める。
 /// Mode 0/2はleading edgeでsample、Mode 1/3はleading edgeでshiftする。
-/// MISOは2段シンクロナイザ経由で取り込み、Mode 1/3ではスレーブがSCLK立ち下がりでSDOを更新する前提（ADS8688等）で、立ち下がりから1クロック後の安定点でサンプルする。
+/// `CLK_DIV`は4以上を指定する。奇数値は半周期が切り捨てられるため偶数を推奨する。
+/// `DATA_WIDTH`は1以上を指定する。
+/// MISOは2段シンクロナイザ経由で取り込み、Mode 1/3ではスレーブがSCLK立ち下がりでSDOを更新する前提（ADS8688等）で、立ち下がり後の安定点でサンプルする。
 ///
 /// ```wavedrom
 /// {
@@ -70,6 +72,7 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
         Sample, /// SCLK立ち上がりとMISOをサンプル
         HighWait, /// High期間を保持
         Shift, /// SCLK立ち下がりとシフト＋MOSI更新
+        LeadHold, /// CPHA=1の先頭High期間を保持
         LowWait, /// Low期間を保持
         Finish, /// CSを上げて終了、最小アイドル時間確保
     }
@@ -165,16 +168,10 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
                 }
 
                 Setup: {
-                    // Mode1の先頭SCLK High幅を定常時と同じ半周期にそろえる。
-                    // この補正がないと先頭Highだけ1クロック分となり、ADS8688等のスレーブの最小High幅仕様を割る。
-                    if cpha == 1 && div_cnt == 1 {
-                        sclk_reg = !cpol;
-                    }
                     busy = 1;
                     cs_n = 0; // CSアサート
 
-                    // 最初のSCLKエッジまでの待ち時間 (t_CSSC)
-                    // とりあえず半周期待つ実装とする
+                    // 最初のSCLKエッジまで半周期待ち、CS setupを確保する。
                     if div_cnt >= CLK_DIV / 2 - 1 {
                         div_cnt = 0;
                         bit_cnt = 0;
@@ -242,7 +239,18 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
                     if cpha == 0 {
                         state = LowWait;
                     } else {
-                        state = HighWait;
+                        state = LeadHold;
+                    }
+                }
+
+                LeadHold: {
+                    // CPHA=1の最初のleading edge後のHigh期間を半周期確保する。
+                    sclk_reg = !cpol;
+                    if div_cnt >= CLK_DIV / 2 - 1 {
+                        div_cnt = 0;
+                        state   = HighWait;
+                    } else {
+                        div_cnt += 1'b1;
                     }
                 }
 
@@ -252,7 +260,7 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
                     } else {
                         sclk_reg = !cpol;
                     }
-                    // CPHA=1ではSCLK立ち下がりの1クロック後にMISOをサンプルする
+                    // CPHA=1ではLowWaitでMISOをサンプルする。
                     if cpha == 1 {
                         miso_reg = miso_synced;
                     }
@@ -283,8 +291,7 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
                 Finish: {
                     cs_n = 1;
 
-                    // 次の通信までの最小アイドル時間 (t_CSHC)を確保
-                    // とりあえず半周期待つ実装とする
+                    // 次の通信までの最小アイドル時間 (t_CSHC)として半周期待つ。
                     if div_cnt >= CLK_DIV / 2 - 1 {
                         state = Idle;
                         done  = 1;
@@ -434,6 +441,79 @@ module test_spi_mode1_loopback {
         clk.next(500); // 十分な時間待機
         $assert(busy == 0, "転送が完了していない");
         $assert(rx_data == 8'hA5, "ループバックデータ不一致");
+        $finish();
+    }
+}
+
+/// Mode 1のCS setupが半周期であることを検証
+#[test(test_spi_mode1_cs_setup)]
+module test_spi_mode1_cs_setup {
+    import Types::SpiMode;
+
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen ( clk );
+
+    var start   : logic   ;
+    var tx_data : logic<8>;
+    var rx_data : logic<8>;
+    var busy    : logic   ;
+    var done    : logic   ;
+    var sclk_out: logic   ;
+    var mosi    : logic   ;
+    var miso    : logic   ;
+    var cs_n    : logic   ;
+
+    var cs_fall_at: u32  ;
+    var rise_at   : u32  ;
+    var cs_seen   : logic;
+    var rise_seen : logic;
+
+    inst dut: SpiMaster::<SpiMode::Mode1> #(
+        DATA_WIDTH: 8 ,
+        CLK_DIV   : 20,
+    ) (
+        clk              ,
+        rst              ,
+        start            ,
+        tx_data          ,
+        rx_data          ,
+        busy             ,
+        done             ,
+        sclk   : sclk_out,
+        mosi             ,
+        miso             ,
+        cs_n             ,
+    );
+
+    initial {
+        start   = 0;
+        tx_data = 8'h00;
+        miso    = 1;
+        rst.assert();
+        clk.next(10);
+
+        start = 1;
+        clk.next(1);
+        start = 0;
+
+        cs_fall_at = 0;
+        rise_at    = 0;
+        cs_seen    = 0;
+        rise_seen  = 0;
+        for i in 0..64 {
+            if !cs_seen && cs_n == 0 {
+                cs_seen    = 1;
+                cs_fall_at = i;
+            }
+            if cs_seen && !rise_seen && sclk_out == 1 {
+                rise_seen = 1;
+                rise_at   = i;
+            }
+            clk.next(1);
+        }
+
+        $assert(cs_seen && rise_seen, "CS setup observation failed");
+        $assert(rise_at - cs_fall_at == 10, "Mode 1 CS setup must be a half period");
         $finish();
     }
 }

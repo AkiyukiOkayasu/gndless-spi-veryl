@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Mode 1/3の先頭SCLKをCS setup後まで遅らせ、`LeadHold`状態で先頭High幅を半周期確保するようにした
+- Mode 1/3のCS setupがCLK_DIVに比例しない問題を修正した
+
+### Changed
+
+- `CLK_DIV`/`DATA_WIDTH`の下限と奇数`CLK_DIV`の扱いをdoc commentへ明記した
+
 ## [0.1.2] - 2026-10-14
 
 - `SpiMaster`のMode 1/3受信サンプルをSCLK立ち下がりから1クロック後（`LowWait`）へ移動

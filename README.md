@@ -2,7 +2,7 @@
 
 SPI masterとSPI mode型を提供します。
 
-依存はVeryl stdのみです。CPOL/CPHAのMode 0〜3、`DATA_WIDTH`、`CLK_DIV`、busy/done、CS setup/hold、MISO同期化の責任は`SpiMaster`のdoc commentを参照してください。転送はstart受付からdoneまでの単一transactionで、busy中は入力を保持しません。
+依存はVeryl stdのみです。CPOL/CPHAのMode 0〜3、`DATA_WIDTH`、`CLK_DIV`、busy/done、CS setup/hold、MISO同期化の責任は`SpiMaster`のdoc commentを参照してください。`CLK_DIV`は4以上を指定し、偶数を推奨します。転送はstart受付からdoneまでの単一transactionで、busy中は入力を保持しません。
 
 ```veryl
 inst spi: spi::SpiMaster::<spi::Types::SpiMode::Mode0> (...);
