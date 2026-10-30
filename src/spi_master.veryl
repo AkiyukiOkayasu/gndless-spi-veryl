@@ -215,7 +215,6 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
 module test_spi_mode0_loopback {
     // SPI共通型をimport
     import Types::SpiMode;
-    import Types::SpiSampleEdge;
 
     inst clk: $tb::clock_gen;
     inst rst: $tb::reset_gen ( clk );
