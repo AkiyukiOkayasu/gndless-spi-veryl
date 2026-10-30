@@ -7,4 +7,14 @@ pub package Types {
         Mode2, // CPOL=1, CPHA=0
         Mode3, // CPOL=1, CPHA=1
     }
+
+    /// MISOをサンプルするSCLKエッジ
+    enum SpiSampleEdge {
+        /// CPHAに従う。CPHA=0はleading edge、CPHA=1はtrailing edge。
+        ModeDefault,
+        /// leading edge。CPOL=0なら立ち上がり、CPOL=1なら立ち下がり。
+        Leading,
+        /// trailing edge。CPOL=0なら立ち下がり、CPOL=1なら立ち上がり。
+        Trailing,
+    }
 }

@@ -1,0 +1,243 @@
+import Types::SpiMode;
+import Types::SpiSampleEdge;
+
+/// Mode 1の32bit転送で、SCLKの全High/Low幅が指定した半周期になることを検証する。
+#[test(test_spi_mode1_clk_div4_all_edges)]
+module test_spi_mode1_clk_div4_all_edges {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen ( clk );
+
+    var start   : logic    ;
+    var tx_data : logic<32>;
+    var rx_data : logic<32>;
+    var busy    : logic    ;
+    var done    : logic    ;
+    var sclk_out: logic    ;
+    var mosi    : logic    ;
+    var cs_n    : logic    ;
+
+    inst dut: SpiMaster::<SpiMode::Mode1> #(
+        DATA_WIDTH: 32,
+        CLK_DIV   : 4 ,
+    ) (
+        clk              ,
+        rst              ,
+        start            ,
+        tx_data          ,
+        rx_data          ,
+        busy             ,
+        done             ,
+        sclk   : sclk_out,
+        mosi             ,
+        miso   : 1'b0    ,
+        cs_n             ,
+    );
+
+    var prev_sclk: logic;
+    var edge_at  : u32  ;
+    var edges    : u32  ;
+
+    initial {
+        start     = 0;
+        tx_data   = 32'hA5C3_5A3C;
+        prev_sclk = 0;
+        edge_at   = 0;
+        edges     = 0;
+        rst.assert();
+        clk.next(10);
+        start = 1;
+        clk.next(1);
+        start = 0;
+
+        for i in 0..400 {
+            if !cs_n && sclk_out != prev_sclk {
+                if edges != 0 {
+                    $assert(i - edge_at == 2, "Mode 1 SCLK half-period must be 2 clocks");
+                }
+                edge_at = i;
+                edges   = edges + 1;
+            }
+            prev_sclk = sclk_out;
+            clk.next(1);
+        }
+        $assert(edges == 64, "32-bit transfer must have 64 SCLK edges");
+        $assert(!busy, "SPI transfer must complete");
+        $finish();
+    }
+}
+
+/// Mode 1の8bit転送で、CS setup、先頭High、先頭Low、全エッジ数が契約どおりであることを検証する。
+#[test(test_spi_mode1_clk_div4_first_edges)]
+module test_spi_mode1_clk_div4_first_edges {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen ( clk );
+
+    var start   : logic   ;
+    var tx_data : logic<8>;
+    var rx_data : logic<8>;
+    var busy    : logic   ;
+    var done    : logic   ;
+    var sclk_out: logic   ;
+    var mosi    : logic   ;
+    var cs_n    : logic   ;
+
+    inst dut: SpiMaster::<SpiMode::Mode1> #(
+        DATA_WIDTH: 8,
+        CLK_DIV   : 4,
+    ) (
+        clk              ,
+        rst              ,
+        start            ,
+        tx_data          ,
+        rx_data          ,
+        busy             ,
+        done             ,
+        sclk   : sclk_out,
+        mosi             ,
+        miso   : 1'b0    ,
+        cs_n             ,
+    );
+
+    var prev_sclk  : logic;
+    var cs_seen    : logic;
+    var cs_fall    : u32  ;
+    var first_rise : u32  ;
+    var first_fall : u32  ;
+    var second_rise: u32  ;
+    var edges      : u32  ;
+
+    initial {
+        start       = 0;
+        tx_data     = 8'hA5;
+        prev_sclk   = 0;
+        cs_seen     = 0;
+        cs_fall     = 0;
+        first_rise  = 0;
+        first_fall  = 0;
+        second_rise = 0;
+        edges       = 0;
+        rst.assert();
+        clk.next(10);
+        start = 1;
+        clk.next(1);
+        start = 0;
+
+        for i in 0..100 {
+            if cs_n == 0 && !cs_seen {
+                cs_seen = 1;
+                cs_fall = i;
+            }
+            if sclk_out != prev_sclk {
+                if edges == 0 {
+                    first_rise = i;
+                } else if edges == 1 {
+                    first_fall = i;
+                } else if edges == 2 {
+                    second_rise = i;
+                }
+                edges = edges + 1;
+            }
+            prev_sclk = sclk_out;
+            clk.next(1);
+        }
+
+        $assert(first_rise - cs_fall == 2, "CS setup must be 2 clocks");
+        $assert(first_fall - first_rise == 2, "first High must be 2 clocks");
+        $assert(second_rise - first_fall == 2, "first Low must be 2 clocks");
+        $assert(edges == 16, "8-bit transfer must have 16 SCLK edges");
+        $finish();
+    }
+}
+
+/// Mode 1の32bit転送で、SDOをSCLKのtrailing edgeで更新するスレーブから
+/// MISOをleading edgeで受信できることを検証する。
+#[test(test_spi_mode1_clk_div4_ads_frame_leading)]
+module test_spi_mode1_clk_div4_ads_frame_leading {
+    inst clk: $tb::clock_gen;
+    inst rst: $tb::reset_gen ( clk );
+
+    const SLAVE_DATA: logic<16> = 16'hA55A;
+
+    var start   : logic    ;
+    var tx_data : logic<32>;
+    var rx_data : logic<32>;
+    var busy    : logic    ;
+    var done    : logic    ;
+    var sclk_out: logic    ;
+    var mosi    : logic    ;
+    var miso    : logic    ;
+    var cs_n    : logic    ;
+
+    var slave_shift: logic<16>;
+    var prev_sclk  : logic    ;
+    var prev_cs    : logic    ;
+    var bit_count  : logic<5> ;
+    var done_seen  : logic    ;
+
+    inst dut: SpiMaster::<SpiMode::Mode1> #(
+        DATA_WIDTH      : 32                    ,
+        CLK_DIV         : 4                     ,
+        MISO_SAMPLE_EDGE: SpiSampleEdge::Leading,
+    ) (
+        clk              ,
+        rst              ,
+        start            ,
+        tx_data          ,
+        rx_data          ,
+        busy             ,
+        done             ,
+        sclk   : sclk_out,
+        mosi             ,
+        miso             ,
+        cs_n             ,
+    );
+
+    always_ff (clk, rst) {
+        if_reset {
+            slave_shift = SLAVE_DATA;
+            prev_sclk   = 0;
+            prev_cs     = 1;
+            bit_count   = 0;
+            miso        = 0;
+            done_seen   = 0;
+        } else {
+            prev_sclk = sclk_out;
+            prev_cs   = cs_n;
+
+            if !cs_n && prev_cs {
+                slave_shift = SLAVE_DATA;
+                bit_count   = 0;
+                miso        = 0;
+            } else if !cs_n && !sclk_out && prev_sclk {
+                if bit_count <: 5'd15 {
+                    miso = 0;
+                } else {
+                    miso        = slave_shift[msb];
+                    slave_shift = {slave_shift[14:0], 1'b0};
+                }
+                bit_count = bit_count + 1'b1;
+            }
+
+            if done {
+                done_seen = 1;
+            }
+        }
+    }
+
+    initial {
+        start   = 0;
+        tx_data = 0;
+        rst.assert();
+        clk.next(10);
+
+        start = 1;
+        clk.next(1);
+        start = 0;
+        clk.next(400);
+
+        $assert(done_seen, "ADS frame transfer did not finish");
+        $assert(!busy, "ADS frame transfer must clear busy");
+        $assert(rx_data[15:0] == SLAVE_DATA, "ADS payload mismatch");
+        $finish();
+    }
+}

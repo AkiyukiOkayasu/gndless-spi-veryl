@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.0] - 2026-10-30
+
+### Changed
+
+- `SpiMaster`のSCLK生成を半周期カウンタ方式へ変更し、`CLK_DIV=4`でも先頭から最終エッジまでHigh/Lowを`CLK_DIV/2`クロックにした
+- `LeadHold`状態を削除し、先頭パルスと定常パルスの幅を同じ経路で生成するようにした
+- MISOの2段シンクロナイザを削除し、SCLK同期のソースシンクロナス入力として指定エッジで直接サンプルするようにした
+- ライブラリ内でMISOを同期化しなくなったため、必要なら利用側で同期化する契約に変更した
+
+### Added
+
+- `Types::SpiSampleEdge`と`SpiMaster`の`MISO_SAMPLE_EDGE`パラメータを追加した
+- `CLK_DIV=4`の全エッジ幅、先頭CS setup、SDOをtrailing edgeで更新するスレーブの受信テストを追加した
+
+### Fixed
+
+- `CLK_DIV=4`でSCLKが8.33MHz相当になっていた問題を修正した
+
 ## [0.1.4] - 2026-10-27
 
 ### Fixed

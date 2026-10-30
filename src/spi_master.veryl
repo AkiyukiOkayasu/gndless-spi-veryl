@@ -1,5 +1,6 @@
 /// SPI共通型をimport
 import Types::SpiMode;
+import Types::SpiSampleEdge;
 /// SPI Master モジュール
 ///
 /// `start`はidle中に1クロックだけHighにし、同じcycleの`tx_data`を保持する。
@@ -22,29 +23,15 @@ import Types::SpiMode;
 ///
 /// CPOLはidle level、CPHAは最初のedgeがshiftかsampleかを決める。
 /// Mode 0/2はleading edgeでsample、Mode 1/3はleading edgeでshiftする。
-/// `CLK_DIV`は4以上を指定する。奇数値は半周期が切り捨てられるため偶数を推奨する。
+/// `CLK_DIV`は4以上の偶数を指定する。SCLKのHigh/Lowはそれぞれ`CLK_DIV/2`クロックで、先頭と最終エッジも同じ幅になる。
 /// `DATA_WIDTH`は1以上を指定する。
-/// MISOは2段シンクロナイザ経由で取り込み、Mode 1/3ではスレーブがSCLK立ち下がりでSDOを更新する前提（ADS8688等）で、立ち下がり後の安定点でサンプルする。
-///
-/// ```wavedrom
-/// {
-///   signal: [
-///     ['CPHA=0',
-///       { name: 'Mode 0 SCLK', wave: '0.P.N.P.N.0' },
-///       { name: 'Mode 2 SCLK', wave: '1.N.P.N.P.1' },
-///       { name: 'action',      wave: 'x.3.4.3.4.x', data: ['sample', 'shift', 'sample', 'shift'] }
-///     ],
-///     ['CPHA=1',
-///       { name: 'Mode 1 SCLK', wave: '0.P.N.P.N.0' },
-///       { name: 'Mode 3 SCLK', wave: '1.N.P.N.P.1' },
-///       { name: 'action',      wave: 'x.4.3.4.3.x', data: ['shift', 'sample', 'shift', 'sample'] }
-///     ]
-///   ]
-/// }
-/// ```
+/// MISOはSCLKに同期して変化するソースシンクロナス入力として、指定したエッジで直接サンプルする。
+/// 既定はCPHAに従い、CPHA=0はleading edge、CPHA=1はtrailing edgeでサンプルする。
+/// スレーブがtrailing edgeでSDOを更新する場合は`MISO_SAMPLE_EDGE`に`Leading`を指定する。
 pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
-    param DATA_WIDTH: u16 = 8 , /// 通信ビット数 (8, 16, 24, 32など)
-    param CLK_DIV   : u16 = 50, /// 分周比 (50MHz入力で50なら1MHzのSCLK)
+    param DATA_WIDTH      : u16           = 8                         , /// 通信ビット数 (8, 16, 24, 32など)
+    param CLK_DIV         : u16           = 50                        , /// SCLK周期のシステムクロック数 (50MHz入力で50なら1MHz)
+    param MISO_SAMPLE_EDGE: SpiSampleEdge = SpiSampleEdge::ModeDefault, /// MISOをサンプルするSCLKエッジ
 ) (
     clk: input clock, /// System Clock (50MHz)
     rst: input reset, /// Reset
@@ -62,57 +49,28 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
     miso: input  logic, /// SPI MISO
     cs_n: output logic, /// SPI Chip select (Active Low)
 ) {
-
-    // ------------------------------------------
-    // 内部ステート定義
-    // ------------------------------------------
     enum State {
         Idle, /// 待機
-        Setup, /// CSを下げてデータ準備
-        Sample, /// SCLK立ち上がりとMISOをサンプル
-        HighWait, /// High期間を保持
-        Shift, /// SCLK立ち下がりとシフト＋MOSI更新
-        LeadHold, /// CPHA=1の先頭High期間を保持
-        LowWait, /// Low期間を保持
+        Setup, /// CSを下げて最初のSCLKエッジまで待つ
+        Transfer, /// SCLKを半周期ごとに切り替えて送受信する
         Finish, /// CSを上げて終了、最小アイドル時間確保
     }
-    import State::*;
     var state: State;
 
-    // ------------------------------------------
-    // カウンタ・レジスタ
-    // ------------------------------------------
-    const DIV_CNT_WIDTH: u32                  = $std::max::<u32>($clog2(CLK_DIV / 2), 1);
-    const BIT_CNT_WIDTH: u32                  = $std::max::<u32>($clog2(DATA_WIDTH), 1);
-    var   div_cnt      : logic<DIV_CNT_WIDTH>; // 分周用カウンタ
-    var   bit_cnt      : logic<BIT_CNT_WIDTH>; // 送信ビット数カウント
-    var   shift_reg    : logic<DATA_WIDTH>   ; // 送受信兼用シフトレジスタ
+    const HALF         : u32 = CLK_DIV / 2;
+    const DIV_CNT_WIDTH: u32 = $std::max::<u32>($clog2(HALF), 1);
+    const BIT_CNT_WIDTH: u32 = $std::max::<u32>($clog2(DATA_WIDTH), 1);
 
-    // SCLKの論理（レジスタで保持）
-    var sclk_reg: logic;
+    var div_cnt   : logic<DIV_CNT_WIDTH>; // 現在の半周期内の経過クロック
+    var bit_cnt   : logic<BIT_CNT_WIDTH>; // 送信ビット数カウント
+    var tx_shift  : logic<DATA_WIDTH>   ; // MOSI用シフトレジスタ
+    var rx_shift  : logic<DATA_WIDTH>   ; // MISO用シフトレジスタ
+    var sclk_reg  : logic               ; // SCLKの論理（レジスタで保持）
+    var half_phase: logic               ; // 0: 次はleading、1: 次はtrailing
 
-    // 内部misoキャプチャ用
-    var miso_reg   : logic;
-    var miso_synced: logic;
-
-    // MISOのメタステーブル対策用2段シンクロナイザ
-    inst miso_sync: $std::synchronizer_basic #(
-        WIDTH : 1,
-        STAGES: 2,
-    ) (
-        i_clk: clk        ,
-        i_rst: rst        ,
-        i_d  : miso       ,
-        o_d  : miso_synced,
-    );
-
-
-
-    // ------------------------------------------
-    // CPOL / CPHA 導出
-    // ------------------------------------------
-    var cpol: logic;
-    var cpha: logic;
+    var cpol             : logic;
+    var cpha             : logic;
+    var sample_on_leading: logic;
 
     always_comb {
         if MODE == SpiMode::Mode2 || MODE == SpiMode::Mode3 {
@@ -126,165 +84,113 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
         } else {
             cpha = 0;
         }
+
+        if MISO_SAMPLE_EDGE == SpiSampleEdge::Leading {
+            sample_on_leading = 1;
+        } else if MISO_SAMPLE_EDGE == SpiSampleEdge::Trailing {
+            sample_on_leading = 0;
+        } else {
+            sample_on_leading = !cpha;
+        }
     }
 
-    // ------------------------------------------
-    // メインステートマシン
-
-    // ------------------------------------------
     always_ff {
         if_reset {
-            state     = Idle;
-            div_cnt   = 0;
-            bit_cnt   = 0;
-            shift_reg = 0;
-            // CPOL に応じた初期値設定
+            state      = State::Idle;
+            div_cnt    = 0;
+            bit_cnt    = 0;
+            tx_shift   = 0;
+            rx_shift   = 0;
+            half_phase = 0;
+            busy       = 0;
+            done       = 0;
+            cs_n       = 1;
             if MODE == SpiMode::Mode2 || MODE == SpiMode::Mode3 {
                 sclk_reg = 1;
             } else {
                 sclk_reg = 0;
             }
-            busy     = 0;
-            done     = 0;
-            cs_n     = 1; // Idle時はHigh
-            miso_reg = 0;
         } else {
-            // デフォルト動作
             done = 0;
 
             case state {
-                Idle: {
+                State::Idle: {
                     busy     = 0;
                     cs_n     = 1;
                     sclk_reg = cpol;
 
                     if start & !busy {
-                        // 通信開始
-                        shift_reg = tx_data; // 送信データロード
-                        state     = Setup;
-                        busy      = 1;
-                        div_cnt   = 0;
+                        tx_shift   = tx_data;
+                        rx_shift   = 0;
+                        bit_cnt    = 0;
+                        div_cnt    = 0;
+                        half_phase = 1; // Setupでleadingを出した後はtrailing
+                        cs_n       = 0;
+                        state      = State::Setup;
+                        busy       = 1;
                     }
                 }
 
-                Setup: {
+                State::Setup: {
                     busy = 1;
-                    cs_n = 0; // CSアサート
+                    cs_n = 0;
 
-                    // 最初のSCLKエッジまで半周期待ち、CS setupを確保する。
-                    if div_cnt >= CLK_DIV / 2 - 1 {
-                        div_cnt = 0;
-                        bit_cnt = 0;
-                        if cpha == 0 {
-                            state = Sample;
-                        } else {
-                            state = Shift;
+                    // CS setupとして半周期待ち、その最後に最初のleading edgeを出す。
+                    if div_cnt >= HALF - 1 {
+                        div_cnt  = 0;
+                        sclk_reg = !cpol;
+                        if sample_on_leading {
+                            rx_shift = (rx_shift << 1) | miso;
                         }
+                        state = State::Transfer;
                     } else {
                         div_cnt += 1'b1;
                     }
                 }
 
-                Sample: {
-                    // MISOをサンプル
-                    if cpha == 0 {
-                        sclk_reg = !cpol;
-                    } else {
-                        sclk_reg = cpol;
-                    }
-                    // CPHA=0はleading edge、CPHA=1はtrailing edge後のLow期間でMISOをサンプルする。
-                    miso_reg = miso_synced;
-                    div_cnt  = 1; //Sampleの1クロック分をカウント
-                    if cpha == 0 {
-                        state = HighWait;
-                    } else {
-                        state = LowWait;
-                    }
-                }
+                State::Transfer: {
+                    busy = 1;
+                    cs_n = 0;
 
-                HighWait: {
-                    if cpha == 0 {
-                        sclk_reg = !cpol;
-                    } else {
-                        sclk_reg = cpol;
-                    }
-
-                    if div_cnt >= CLK_DIV / 2 - 1 {
+                    if div_cnt >= HALF - 1 {
                         div_cnt = 0;
-                        if cpha == 0 {
-                            state = Shift;
-                        } else {
-                            state = Sample;
-                        }
-                    } else {
-                        div_cnt += 1'b1;
-                    }
-                }
-
-                Shift: {
-                    // シフトし、次ビットを出力
-                    if cpha == 0 {
-                        sclk_reg = cpol;
-                    } else {
-                        sclk_reg = !cpol;
-                    }
-                    // CPHA=1の場合、最初のShiftではシフトしない（まだサンプルしていないため）
-                    if cpha == 0 || bit_cnt >: 0 {
-                        shift_reg = (shift_reg << 1) | miso_reg; // サンプル結果をLSBへ
-                    }
-                    div_cnt = 1; // Shiftの1クロック分をカウント
-                    if cpha == 0 {
-                        state = LowWait;
-                    } else {
-                        state = LeadHold;
-                    }
-                }
-
-                LeadHold: {
-                    // CPHA=1の最初のleading edge後のHigh期間を半周期確保する。
-                    sclk_reg = !cpol;
-                    if div_cnt >= CLK_DIV / 2 - 1 {
-                        div_cnt = 0;
-                        state   = HighWait;
-                    } else {
-                        div_cnt += 1'b1;
-                    }
-                }
-
-                LowWait: {
-                    if cpha == 0 {
-                        sclk_reg = cpol;
-                    } else {
-                        sclk_reg = !cpol;
-                    }
-                    if div_cnt >= CLK_DIV / 2 - 1 {
-                        if bit_cnt >= DATA_WIDTH - 1 {
-                            // CPHA=1の最後のサンプル結果をシフトする。
-                            if cpha == 1 {
-                                shift_reg = (shift_reg << 1) | miso_reg;
-                            }
-                            bit_cnt = 0;
-                            div_cnt = 0;
-                            state   = Finish;
-                        } else {
-                            bit_cnt += 1'b1;
+                        if half_phase == 1 {
+                            // trailing edge
+                            sclk_reg = cpol;
                             if cpha == 0 {
-                                state = Sample;
-                            } else {
-                                state = Shift;
+                                tx_shift = tx_shift << 1;
                             }
+                            if !sample_on_leading {
+                                rx_shift = (rx_shift << 1) | miso;
+                            }
+                            half_phase = 0;
+                            if bit_cnt >= DATA_WIDTH - 1 {
+                                state = State::Finish;
+                            } else {
+                                bit_cnt += 1'b1;
+                            }
+                        } else {
+                            // leading edge
+                            sclk_reg = !cpol;
+                            if cpha == 1 && bit_cnt >: 0 {
+                                tx_shift = tx_shift << 1;
+                            }
+                            if sample_on_leading {
+                                rx_shift = (rx_shift << 1) | miso;
+                            }
+                            half_phase = 1;
                         }
                     } else {
                         div_cnt += 1'b1;
                     }
                 }
 
-                Finish: {
+                State::Finish: {
                     cs_n = 1;
 
                     // 次の通信までの最小アイドル時間 (t_CSHC)として半周期待つ。
-                    if div_cnt >= CLK_DIV / 2 - 1 {
-                        state = Idle;
+                    if div_cnt >= HALF - 1 {
+                        state = State::Idle;
                         done  = 1;
                         busy  = 0;
                     } else {
@@ -295,15 +201,9 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
         }
     }
 
-    // ------------------------------------------
-    // 出力割り当て
-    // ------------------------------------------
-    assign sclk = sclk_reg;
-
-    // MSB Firstで送信 (最上位ビットをMOSIに出す)
-    assign mosi = shift_reg[msb];
-
-    assign rx_data = shift_reg;
+    assign sclk    = sclk_reg;
+    assign mosi    = tx_shift[msb];
+    assign rx_data = rx_shift;
 }
 
 // ==========================================================================
@@ -315,6 +215,7 @@ pub module SpiMaster::<MODE: SpiMode = SpiMode::Mode0> #(
 module test_spi_mode0_loopback {
     // SPI共通型をimport
     import Types::SpiMode;
+    import Types::SpiSampleEdge;
 
     inst clk: $tb::clock_gen;
     inst rst: $tb::reset_gen ( clk );
